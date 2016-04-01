@@ -1,6 +1,13 @@
 {
   "Description": "Host VPC for Lambda Static IPs",
   "Parameters": {
+    "CreateTestLambda": {
+      "Type": "String",
+      "Description": "Do you want to create a test Lambda function? (yes|no)",
+      "AllowedPattern": "^(yes|no)$",
+      "ConstraintDescription": "Please enter yes or no",
+      "Default": "no"
+    },
     "VPCClassBOctet": {
       "Type": "Number",
       "Description": "The Class B block to use for the VPC (0-255).",
@@ -24,24 +31,13 @@
   },
   "Conditions": {
     "ShouldPartitionTraffic": {
-      "Fn::Not": [
-        {
-          "Fn::Equals": [
-            {
-              "Ref": "EIPAllocationIdBeta"
-            },
-            ""
-          ]
-        }
-      ]
+      "Fn::Not": [{"Fn::Equals": [{"Ref": "EIPAllocationIdBeta"}, ""]}]
     },
     "ShouldNotPartitionTraffic": {
-      "Fn::Equals": [
-        {
-          "Ref": "EIPAllocationIdBeta"
-        },
-        ""
-      ]
+      "Fn::Equals": [{"Ref": "EIPAllocationIdBeta"}, ""]
+    },
+    "ShouldCreateTestLambda": {
+      "Fn::Equals": [{"Ref": "CreateTestLambda"}, "yes"]
     }
   },
   "Resources": {
@@ -137,7 +133,7 @@
       "Properties": {
         "AvailabilityZone": {
           "Fn::Select": [
-            0,
+            1,
             {
               "Fn::GetAZs": {
                 "Ref": "AWS::Region"
@@ -153,7 +149,6 @@
         "VpcId": { "Ref": "VPC" }
       }
     },
-
     "GatewayToInternet": {
       "Type": "AWS::EC2::InternetGateway"
     },
@@ -226,7 +221,6 @@
         "VpcId": { "Ref": "VPC" }
       }
     },
-
     "LambdaPoolSecurityGroup": {
       "DependsOn": [
         "VPC"
@@ -247,7 +241,6 @@
         }
       }
     },
-
     "GatewayAttachmentToVPC": {
       "DependsOn": [
         "GatewayToInternet",
@@ -410,6 +403,103 @@
       "Properties": {
         "RouteTableId": { "Ref": "RoutesForPrivateSubnetBeta" },
         "SubnetId": { "Ref": "PrivateSubnetBeta" }
+      }
+    },
+    "LambdaExecutionRole": {
+      "Type": "AWS::IAM::Role",
+      "Condition": "ShouldCreateTestLambda",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": [
+                  "lambda.amazonaws.com"
+                ]
+              },
+              "Action": [
+                "sts:AssumeRole"
+              ]
+            }
+          ]
+        },
+        "Path": "/",
+        "Policies": [
+          {
+            "PolicyName": "root",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "logs:CreateLogGroup",
+                    "logs:CreateLogStream",
+                    "logs:PutLogEvents"
+                  ],
+                  "Resource": "arn:aws:logs:*:*:*"
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "ec2:CreateNetworkInterface"
+                  ],
+                  "Resource": "*"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "LambdaTestFunction": {
+      "Type": "AWS::Lambda::Function",
+      "Condition": "ShouldCreateTestLambda",
+      "Properties": {
+        "Description": "Test fixed IP functionality on outgoing public requests",
+        "Handler": "index.handler",
+        "MemorySize": 128,
+        "Runtime": "nodejs",
+        "Timeout": 10,
+        "Role": {"Fn::GetAtt": ["LambdaExecutionRole", "Arn"]},
+        "VpcConfig": {
+          "SecurityGroupIds": [
+            {"Ref": "LambdaPoolSecurityGroup"}
+          ],
+          "SubnetIds": [
+            {"Ref": "PrivateSubnetAlpha"},
+            {"Ref": "PrivateSubnetBeta"}
+          ]
+        },
+        "Code": {
+          "ZipFile": {
+            "Fn::Join": ["\n", [
+              "var http = require('http');",
+              "exports.handler = function (event, context) {",
+              "    http.get('http://ifconfig.co', function (res) {",
+              "        var buff = [];",
+              "        console.log('Got response: %s', res.statusCode);",
+              "        res.on('data', function (chunk) {",
+              "            buff.push(chunk);",
+              "        });",
+              "        res.on('end', function () {",
+              "            console.log('Found: %s', buff.join(''));",
+              "            context.done();",
+              "        });",
+              "        res.on('error', function (err) {",
+              "            console.error('Got error: %s', e.message);",
+              "            context.fail();",
+              "        });",
+              "    }).on('error', function (e) {",
+              "        console.log('Got error: %s', e.message);",
+              "        context.fail();",
+              "    });",
+              "};"
+            ]]
+          }
+        }
       }
     }
   },
